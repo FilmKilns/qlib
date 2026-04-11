@@ -1,0 +1,68 @@
+# ==================== 全局基础设置 ====================
+qlib_init:                      # Qlib 初始化配置
+  provider_uri: "~/.qlib/qlib_data/cn_data"  # A股数据存储路径，按需修改
+  region: cn                     # 市场区域，cn代表A股
+
+# ==================== 数据和特征工程 ====================
+data_handler_config: &data_handler_config  # 定义一个配置锚点（可复用）
+  start_time: 2022-01-01         # 数据起始日期
+  end_time: 2026-04-01           # 数据结束日期
+  fit_start_time: 2022-01-01     # 训练数据起始日期
+  fit_end_time: 2023-12-31       # 训练数据结束日期
+  instruments: 'file://cn_my_core_stocks.txt'          # 股票池，如csi300（沪深300），可改为csi500等
+
+task:
+  dataset:                       # 数据集配置
+    class: DatasetH
+    module_path: qlib.data.dataset
+    kwargs:
+      handler:                   # 数据处理
+        class: Alpha158          # 内置的158个技术因子
+        module_path: qlib.contrib.data.handler
+        kwargs: *data_handler_config
+      segments:                  # 时间段划分
+        train: ["2022-01-01", "2023-12-31"]
+        valid: ["2024-01-01", "2024-12-31"]
+        test:  ["2025-01-01", "2025-12-31"]
+
+# ==================== 模型配置 ====================
+  model:                         # 模型配置
+    class: LGBModel              # 使用的模型，如LGBModel、GRU等
+    module_path: qlib.contrib.model.gbdt
+    kwargs:
+      loss: mse
+      colsample_bytree: 0.8      # LightGBM参数，按需调整
+      learning_rate: 0.1         # 学习率
+      max_depth: 8               # 树的最大深度
+      num_leaves: 210            # 叶子节点数
+      num_threads: 20            # 并行线程数
+
+# ==================== 策略与回测配置 ====================
+port_analysis_config: &port_analysis_config  # 策略与回测配置锚点
+  strategy:                      # 策略配置
+    class: TopkDropoutStrategy   # 选股策略，如TopkDropoutStrategy
+    module_path: qlib.contrib.strategy.strategy
+    kwargs:
+      topk: 19                   # 持有股票数量
+      n_drop: 5                  # 每期调整个数
+      signal: <PRED>             # 模型预测结果占位符
+  backtest:                      # 回测配置
+    start_time: 2025-01-01       # 回测开始日期
+    end_time: 2026-04-01         # 回测结束日期
+    account: 100000000           # 初始资金（单位：元）
+    benchmark: "SH000300"        # 基准指数，沪深300为SH000300
+    exchange_kwargs:             # 交易细节配置
+      limit_threshold: 0.095     # 涨跌停限制（9.5%）
+      deal_price: "close"        # 交易价格，如close、open
+      open_cost: 0.0005          # 开仓手续费率
+      close_cost: 0.0015         # 平仓手续费率
+      min_cost: 5                # 最低手续费（元）
+
+# ==================== 记录与输出 ====================
+record:
+  - class: SignalRecord          # 记录预测信号
+    module_path: qlib.workflow.record_temp
+  - class: PortAnaRecord         # 记录投资组合分析
+    module_path: qlib.workflow.record_temp
+    kwargs:
+      config: *port_analysis_config
