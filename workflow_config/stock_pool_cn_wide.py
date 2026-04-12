@@ -19,7 +19,8 @@ from qlib.config import REG_CN
 from qlib.workflow import R
 from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
 from qlib.utils import init_instance_by_config
-from qlib.tests.data import GetData
+from qlib.workflow.task.gen import RollingGen
+from qlib.workflow.task.utils import TimeAdjuster
 import pandas as pd
 import os
 
@@ -28,12 +29,12 @@ PROVIDER_URI = "~/.qlib/qlib_data/qlib_data_1775983012349"  # A股数据路径
 
 # 时间范围与滚动窗口设置
 START_TIME = "2015-07-10"
-END_TIME = "2025-03-31"           # 滚动测试截止日，留出最新数据做最终验证
+END_TIME = "2025-03-31"           # 滚动测试截止日
 TRAIN_PERIOD = 5 * 365            # 训练窗口长度：5年
 TEST_PERIOD = 1 * 365             # 测试窗口长度：1年
 STEP = 6 * 30                     # 滚动步长：6个月
 
-# 最终回测期（用于评估最新表现）
+# 最终回测期
 FINAL_BACKTEST_START = "2025-04-01"
 FINAL_BACKTEST_END = "2026-04-10"
 
@@ -41,7 +42,7 @@ FINAL_BACKTEST_END = "2026-04-10"
 TOPK = 6                          # 持仓数量（池子一半）
 N_DROP = 2                        # 每次调仓替换数量
 
-# 模型超参数（已针对过拟合优化）
+# 模型超参数
 MODEL_KWARGS = {
     "loss": "mse",
     "num_boost_round": 500,
@@ -78,12 +79,9 @@ BACKTEST_KWARGS = {
 print("正在初始化 Qlib...")
 qlib.init(provider_uri=PROVIDER_URI, region=REG_CN)
 
-# ==================== 定义工作流配置 ====================
-def get_task_config(segments: dict) -> dict:
-    """
-    根据给定的时间段生成任务配置字典。
-    注意：handler 的 instruments 指向股票池文件。
-    """
+# ==================== 任务配置模板 ====================
+def get_task_template() -> dict:
+    """返回带有占位符的任务配置模板，占位符将由 RollingGen 填充"""
     return {
         "dataset": {
             "class": "DatasetH",
@@ -95,14 +93,16 @@ def get_task_config(segments: dict) -> dict:
                     "kwargs": {
                         "start_time": START_TIME,
                         "end_time": END_TIME,
-                        "fit_start_time": segments["train"][0],
-                        "fit_end_time": segments["train"][1],
+                        "fit_start_time": "<FIT_START>",
+                        "fit_end_time": "<FIT_END>",
                         "instruments": 'all',
-                        # 可选：修改预测标签为5日收益率，降低噪声
-                        # "label": ["Ref($close, -5) / Ref($close, -1) - 1"]
                     }
                 },
-                "segments": segments
+                "segments": {
+                    "train": ["<FIT_START>", "<FIT_END>"],
+                    "valid": ["<VALID_START>", "<VALID_END>"],
+                    "test": ["<TEST_START>", "<TEST_END>"],
+                }
             }
         },
         "model": {
@@ -112,9 +112,9 @@ def get_task_config(segments: dict) -> dict:
         }
     }
 
-def get_port_analysis_config() -> dict:
-    """回测与策略配置"""
-    return {
+def get_port_analysis_config(test_start: str, test_end: str) -> dict:
+    """生成回测配置，动态设置测试起止时间"""
+    config = {
         "strategy": {
             "class": "TopkDropoutStrategy",
             "module_path": "qlib.contrib.strategy.strategy",
@@ -124,87 +124,85 @@ def get_port_analysis_config() -> dict:
                 "signal": "<PRED>",
             }
         },
-        "backtest": BACKTEST_KWARGS
+        "backtest": BACKTEST_KWARGS.copy()
     }
+    config["backtest"]["start_time"] = test_start
+    config["backtest"]["end_time"] = test_end
+    return config
 
-# ==================== 创建滚动训练管理器 ====================
+# ==================== 生成滚动任务 ====================
 print(f"创建滚动训练计划：训练 {TRAIN_PERIOD//365} 年，测试 {TEST_PERIOD//365} 年，步长 {STEP//30} 个月")
-exp_manager = R.get_exp_manager()
-rolling = exp_manager.create_rolling(
+rolling_gen = RollingGen(
+    step=STEP,
+    rtype=TimeAdjuster.SHIFT_SD,   # 滑动窗口，固定训练长度
     train_period=TRAIN_PERIOD,
     test_period=TEST_PERIOD,
-    step=STEP,
     start_time=START_TIME,
     end_time=END_TIME,
+    include_valid=True,            # 生成验证集用于早停
 )
 
-# ==================== 执行滚动训练 ====================
-all_metrics = []  # 存储每期回测指标
+task_template = get_task_template()
+task_list = rolling_gen.generate(task_template)
+print(f"共生成 {len(task_list)} 个滚动任务。")
 
-for i, (train_start, train_end, test_start, test_end) in enumerate(rolling):
+# ==================== 执行滚动训练 ====================
+all_metrics = []
+
+for i, task_config in enumerate(task_list):
+    segs = task_config["dataset"]["kwargs"]["segments"]
+    train_start, train_end = segs["train"]
+    valid_start, valid_end = segs["valid"]
+    test_start, test_end = segs["test"]
+
     print(f"\n{'='*60}")
-    print(f"滚动窗口 {i+1} / {len(rolling)}")
+    print(f"滚动窗口 {i+1} / {len(task_list)}")
     print(f"训练期: {train_start} → {train_end}")
+    print(f"验证期: {valid_start} → {valid_end}")
     print(f"测试期: {test_start} → {test_end}")
     print(f"{'='*60}")
 
-    segments = {
-        "train": (train_start.strftime("%Y-%m-%d"), train_end.strftime("%Y-%m-%d")),
-        "test": (test_start.strftime("%Y-%m-%d"), test_end.strftime("%Y-%m-%d")),
-    }
+    # 使用 R.start 上下文管理器管理实验
+    with R.start(experiment_name=f"rolling_etf_{i}"):
+        # 初始化数据集和模型
+        dataset = init_instance_by_config(task_config["dataset"])
+        model = init_instance_by_config(task_config["model"])
 
-    # 1. 启动实验
-    exp = R.start_exp(
-        experiment_name=f"rolling_etf_{i}",
-        recorder_name="mlflow",
-        uri="mlruns",
-    )
+        # 训练与预测
+        print("训练模型中...")
+        model.fit(dataset)
+        print("生成预测信号...")
+        pred = model.predict(dataset)
 
-    # 2. 初始化任务与模型
-    task_config = get_task_config(segments)
-    task = init_instance_by_config(task_config)
-    model = init_instance_by_config(task_config["model"])
+        # 记录信号
+        sr = SignalRecord()
+        sr.generate(dataset=dataset, model=model, pred=pred)
 
-    # 3. 训练与预测
-    print("训练模型中...")
-    model.fit(task)
-    print("生成预测信号...")
-    pred = model.predict(task)
+        # 执行回测
+        port_config = get_port_analysis_config(test_start, test_end)
+        par = PortAnaRecord(recorder=R, **{"config": port_config})
+        par.generate()
 
-    # 4. 记录信号与回测
-    sr = SignalRecord(recorder=exp)
-    sr.generate(dataset=task.dataset, model=model, pred=pred)
+        # 提取关键指标
+        report = par.load("portfolio_analysis/report_normal.pkl")
+        ann_return = report["return"]
+        sharpe = report.get("sharpe", 0.0)
+        max_dd = report.get("max_drawdown", 0.0)
 
-    port_config = get_port_analysis_config()
-    # 注意：回测时间段必须覆盖测试期
-    port_config["backtest"]["start_time"] = test_start.strftime("%Y-%m-%d")
-    port_config["backtest"]["end_time"] = test_end.strftime("%Y-%m-%d")
+        all_metrics.append({
+            "window": i,
+            "train_start": train_start,
+            "train_end": train_end,
+            "valid_start": valid_start,
+            "valid_end": valid_end,
+            "test_start": test_start,
+            "test_end": test_end,
+            "annual_return": ann_return,
+            "sharpe": sharpe,
+            "max_drawdown": max_dd,
+        })
 
-    par = PortAnaRecord(recorder=exp, **{"config": port_config})
-    par.generate()
-
-    # 5. 提取关键指标
-    metrics = exp.list_metrics()
-    report = par.load("portfolio_analysis/report_normal.pkl")
-    positions = par.load("portfolio_analysis/positions_normal.pkl")
-
-    ann_return = report["return"]  # 年化收益率
-    sharpe = report.get("sharpe", 0.0)
-    max_dd = report.get("max_drawdown", 0.0)
-
-    all_metrics.append({
-        "window": i,
-        "train_start": train_start,
-        "train_end": train_end,
-        "test_start": test_start,
-        "test_end": test_end,
-        "annual_return": ann_return,
-        "sharpe": sharpe,
-        "max_drawdown": max_dd,
-    })
-
-    print(f"测试期年化收益率: {ann_return:.2%}, 夏普比率: {sharpe:.2f}, 最大回撤: {max_dd:.2%}")
-    R.end_exp()
+        print(f"测试期年化收益率: {ann_return:.2%}, 夏普比率: {sharpe:.2f}, 最大回撤: {max_dd:.2%}")
 
 # ==================== 汇总滚动测试结果 ====================
 print("\n" + "="*60)
@@ -217,37 +215,63 @@ print(f"\n平均年化收益率: {df_metrics['annual_return'].mean():.2%}")
 print(f"平均夏普比率: {df_metrics['sharpe'].mean():.2f}")
 print(f"平均最大回撤: {df_metrics['max_drawdown'].mean():.2%}")
 
-# ==================== 最终回测（可选） ====================
+# ==================== 最终回测 ====================
 print("\n" + "="*60)
 print("在最近完整周期上训练最终模型，并进行最终回测")
 print("="*60)
 
 final_segments = {
     "train": (START_TIME, "2025-03-31"),
+    "valid": ("2024-01-01", "2024-12-31"),   # 用于早停
     "test": (FINAL_BACKTEST_START, FINAL_BACKTEST_END),
 }
 
-exp_final = R.start_exp(experiment_name="final_model_2025_2026")
-task_final = init_instance_by_config(get_task_config(final_segments))
-model_final = init_instance_by_config(get_task_config(final_segments)["model"])
+# 构建最终任务配置（不使用占位符）
+final_task_config = {
+    "dataset": {
+        "class": "DatasetH",
+        "module_path": "qlib.data.dataset",
+        "kwargs": {
+            "handler": {
+                "class": "Alpha158",
+                "module_path": "qlib.contrib.data.handler",
+                "kwargs": {
+                    "start_time": START_TIME,
+                    "end_time": FINAL_BACKTEST_END,
+                    "fit_start_time": final_segments["train"][0],
+                    "fit_end_time": final_segments["train"][1],
+                    "instruments": 'all',
+                }
+            },
+            "segments": final_segments
+        }
+    },
+    "model": {
+        "class": "LGBModel",
+        "module_path": "qlib.contrib.model.gbdt",
+        "kwargs": MODEL_KWARGS
+    }
+}
 
-print("训练最终模型中...")
-model_final.fit(task_final)
-pred_final = model_final.predict(task_final)
+with R.start(experiment_name="final_model_2025_2026"):
+    dataset_final = init_instance_by_config(final_task_config["dataset"])
+    model_final = init_instance_by_config(final_task_config["model"])
 
-sr_final = SignalRecord(recorder=exp_final)
-sr_final.generate(dataset=task_final.dataset, model=model_final, pred=pred_final)
+    print("训练最终模型中...")
+    model_final.fit(dataset_final)
+    pred_final = model_final.predict(dataset_final)
 
-port_config_final = get_port_analysis_config()
-par_final = PortAnaRecord(recorder=exp_final, **{"config": port_config_final})
-par_final.generate()
+    sr_final = SignalRecord()
+    sr_final.generate(dataset=dataset_final, model=model_final, pred=pred_final)
 
-report_final = par_final.load("portfolio_analysis/report_normal.pkl")
-print(f"最终回测期 ({FINAL_BACKTEST_START} → {FINAL_BACKTEST_END})")
-print(f"年化收益率: {report_final['return']:.2%}")
-print(f"夏普比率: {report_final.get('sharpe', 0.0):.2f}")
-print(f"最大回撤: {report_final.get('max_drawdown', 0.0):.2%}")
+    port_config_final = get_port_analysis_config(FINAL_BACKTEST_START, FINAL_BACKTEST_END)
+    par_final = PortAnaRecord(recorder=R, **{"config": port_config_final})
+    par_final.generate()
 
-R.end_exp()
+    report_final = par_final.load("portfolio_analysis/report_normal.pkl")
+    print(f"最终回测期 ({FINAL_BACKTEST_START} → {FINAL_BACKTEST_END})")
+    print(f"年化收益率: {report_final['return']:.2%}")
+    print(f"夏普比率: {report_final.get('sharpe', 0.0):.2f}")
+    print(f"最大回撤: {report_final.get('max_drawdown', 0.0):.2%}")
 
 print("\n所有实验记录已保存至 mlruns 目录，可使用 `mlflow ui` 查看。")
