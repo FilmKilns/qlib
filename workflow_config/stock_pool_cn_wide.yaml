@@ -1,83 +1,75 @@
-# ==================== 全局基础设置 ====================
-# symbols=SH510050,SZ159901,SZ159902,SZ159919,SZ159930,SZ159928,SZ159929,SH510620,SH510900,SH513100,SZ164906,SZ159939
-# mkdir ~/.qlib/src_data/qlib_data_1775983012349 && unzip qlib_data_1775983012349.zip -d ~/.qlib/src_data/qlib_data_1775983012349
-# python scripts/dump_bin.py dump_all --data_path ~/.qlib/src_data/qlib_data_1775983012349/features/ --qlib_dir ~/.qlib/qlib_data/qlib_data_1775983012349 --include_fields open,high,low,close,volume,factor
-qlib_init:                      # Qlib 初始化配置
-  provider_uri: "~/.qlib/qlib_data/qlib_data_1775983012349"  # A股数据存储路径，按需修改
-  region: cn                     # 市场区域，cn代表A股
+qlib_init:
+  provider_uri: "~/.qlib/qlib_data/qlib_data_1775983012349"
+  region: cn
 
-# ==================== 数据和特征工程 ====================
-data_handler_config: &data_handler_config  # 定义一个配置锚点（可复用）
-  start_time: 2015-07-10         # 数据起始日期
-  end_time: 2026-04-10           # 数据结束日期
-  fit_start_time: 2015-07-10     # 训练数据起始日期
-  fit_end_time: 2021-12-31       # 训练数据结束日期
-  instruments: 'all'          # 股票池，如csi300（沪深300），可改为csi500等
+trainer:
+  class: RollingTrainer
+  kwargs:
+    train_period: 1825  # 5年，以天为单位
+    test_period: 365   # 1年
+    step: 180          # 6个月
 
 task:
-  dataset:                       # 数据集配置
+  model:
+    class: LGBModel
+    module_path: qlib.contrib.model.gbdt
+    kwargs:
+      loss: mse
+      num_boost_round: 500
+      early_stopping_rounds: 50
+      learning_rate: 0.02
+      max_depth: 5
+      num_leaves: 50
+      lambda_l1: 5.0
+      lambda_l2: 5.0
+      min_child_samples: 50
+      min_split_gain: 0.01
+      subsample: 0.8
+      colsample_bytree: 0.7
+      num_threads: 20
+  dataset:
     class: DatasetH
     module_path: qlib.data.dataset
     kwargs:
-      handler:                   # 数据处理
-        class: Alpha158          # 内置的158个技术因子
+      handler:
+        class: Alpha158
         module_path: qlib.contrib.data.handler
-        kwargs: *data_handler_config
-      segments:                  # 时间段划分
+        kwargs:
+          start_time: 2015-07-10
+          end_time: 2026-04-10
+          fit_start_time: 2015-07-10
+          fit_end_time: 2025-03-31
+          instruments: 'all'
+      segments:
         train: [2015-07-10, 2021-12-31]
         valid: [2022-01-01, 2023-12-31]
         test: [2024-01-01, 2025-03-31]
 
-# ==================== 模型配置 ====================
-  model:                         # 模型配置
-    class: LGBModel              # 使用的模型，如LGBModel、GRU等
-    module_path: qlib.contrib.model.gbdt
-    kwargs:
-      loss: mse
-      num_boost_round: 500       # 新增：限制提升轮数，防止过拟合
-      early_stopping_rounds: 50   # 新增：早停轮数，提高泛化能力
-      colsample_bytree: 0.8
-      learning_rate: 0.05         # 建议降低初始学习率，训练更稳定
-      max_depth: 8
-      num_leaves: 210
-      lambda_l1: 1.0             # 新增：L1正则化，抑制过拟合
-      lambda_l2: 1.0             # 新增：L2正则化
-      min_child_samples: 20      # 新增：叶子节点最小样本数，防止过拟合
-      num_threads: 20
-
-# ==================== 策略与回测配置 ====================
-port_analysis_config: &port_analysis_config  # 策略与回测配置锚点
-  strategy:                      # 策略配置
-    class: TopkDropoutStrategy   # 选股策略，如TopkDropoutStrategy
+port_analysis_config: &port_analysis_config
+  strategy:
+    class: TopkDropoutStrategy
     module_path: qlib.contrib.strategy.strategy
     kwargs:
-      # 【关键修正】根据你的12只ETF池优化参数
-      topk: 6                    # 持仓数量 = 池子一半，兼顾集中与分散
-      n_drop: 2                  # 每次调仓只替换2只，降低换手率和冲击成本
+      topk: 6
+      n_drop: 2
       signal: <PRED>
-      risk_degree: 0.95          # 可选，高级风控参数，默认0.95
-      method_sell: "bottom"      # 可选，卖出逻辑，默认卖出最差的n_drop只
-      method_buy: "top"          # 可选，买入逻辑，默认买入最好的n_drop只
-      # 可选：根据你的持仓调整频率。如果你的预测是每日的，策略默认也是每日调仓。
-
   backtest:
     start_time: 2025-04-01
     end_time: 2026-04-10
     account: 100000000
     benchmark: "SH000300"
     exchange_kwargs:
-      limit_threshold: 0.1       # 统一涨跌停限制为10%
-      deal_price: "vwap"         # 改用VWAP，更贴近真实交易成本
-      open_cost: 0.0003          # 买入：佣金0.03%
-      close_cost: 0.0013         # 卖出：佣金0.03% + 印花税0.1%
-      min_cost: 0.05             # 最低手续费
-      slippage: 0.001            # 新增：0.1%的滑点，模拟市场冲击成本
+      limit_threshold: 0.1
+      deal_price: vwap
+      open_cost: 0.0003
+      close_cost: 0.0013
+      min_cost: 0.05
+      slippage: 0.001
 
-# ==================== 记录与输出 ====================
 record:
-  - class: SignalRecord          # 记录预测信号
+  - class: SignalRecord
     module_path: qlib.workflow.record_temp
-  - class: PortAnaRecord         # 记录投资组合分析
+  - class: PortAnaRecord
     module_path: qlib.workflow.record_temp
     kwargs:
       config: *port_analysis_config
