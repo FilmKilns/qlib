@@ -133,13 +133,8 @@ def get_port_analysis_config(test_start: str, test_end: str) -> dict:
 # ==================== 生成滚动任务 ====================
 print(f"创建滚动训练计划：训练 {TRAIN_PERIOD//365} 年，测试 {TEST_PERIOD//365} 年，步长 {STEP//30} 个月")
 rolling_gen = RollingGen(
-    step=STEP,
-    rtype=TimeAdjuster.SHIFT_SD,   # 滑动窗口，固定训练长度
-    train_period=TRAIN_PERIOD,
-    test_period=TEST_PERIOD,
-    start_time=START_TIME,
-    end_time=END_TIME,
-    include_valid=True,            # 生成验证集用于早停
+    step=STEP, 
+    rtype=TimeAdjuster.SHIFT_SD, # 或 RollingGen.ROLL_SD
 )
 
 task_template = get_task_template()
