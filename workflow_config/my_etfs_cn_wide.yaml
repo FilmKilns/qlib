@@ -1,32 +1,25 @@
-# SH510050,SH510180,SH510300,SZ159919,SZ159915,SH510500,SZ159901,SH512010,SH513100,SZ159920,SH510900,SH510880,SH518880,SZ159937,SH511990,SH511880,SH511010
 qlib_init:
   provider_uri: "~/.qlib/qlib_data/qlib_data_1776001753032"
   region: cn
-
-trainer:
-  class: RollingTrainer
-  kwargs:
-    train_period: 1825  # 5年，以天为单位
-    test_period: 365   # 1年
-    step: 180          # 6个月
 
 task:
   model:
     class: LGBModel
     module_path: qlib.contrib.model.gbdt
     kwargs:
-      loss: mse
-      num_boost_round: 2000
-      early_stopping_rounds: 100
-      learning_rate: 0.005
-      max_depth: 4
-      num_leaves: 20
-      lambda_l1: 10.0
-      lambda_l2: 10.0
-      min_child_samples: 100
-      min_split_gain: 0.1
-      subsample: 0.7
-      colsample_bytree: 0.6
+      objective: "binary"
+      metric: "auc"
+      num_boost_round: 1000
+      early_stopping_rounds: 50
+      learning_rate: 0.02
+      max_depth: 6
+      num_leaves: 40
+      lambda_l1: 1.0
+      lambda_l2: 1.0
+      min_child_samples: 50
+      min_split_gain: 0.01
+      subsample: 0.8
+      colsample_bytree: 0.8
       num_threads: 20
   dataset:
     class: DatasetH
@@ -36,11 +29,12 @@ task:
         class: Alpha158
         module_path: qlib.contrib.data.handler
         kwargs:
-          start_time: 2015-01-01          # 统一数据起点
-          end_time: 2026-04-10            # 覆盖至回测期末
-          fit_start_time: 2015-01-01      # 训练拟合起点
-          fit_end_time: 2022-12-31        # 训练拟合终点
-          instruments: 'all'
+          start_time: 2015-01-01
+          end_time: 2026-04-10
+          fit_start_time: 2015-01-01
+          fit_end_time: 2022-12-31
+          instruments: 'all'   # 必须明确路径
+          label: ["Ref($close, -5) > $close"]       # 分类标签
       segments:
         train: [2015-01-01, 2022-12-31]
         valid: [2023-01-01, 2024-06-30]
