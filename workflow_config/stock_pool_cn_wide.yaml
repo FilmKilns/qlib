@@ -1,5 +1,7 @@
 # ==================== 全局基础设置 ====================
 # symbols=SH510050,SZ159901,SZ159902,SZ159919,SZ159930,SZ159928,SZ159929,SH510620,SH510900,SH513100,SZ164906,SZ159939
+# mkdir ~/.qlib/src_data/qlib_data_1775983012349 && unzip qlib_data_1775983012349.zip -d ~/.qlib/src_data/qlib_data_1775983012349
+# python scripts/dump_bin.py dump_all --data_path ~/.qlib/src_data/qlib_data_1775983012349/features/ --qlib_dir ~/.qlib/qlib_data/qlib_data_1775983012349 --include_fields open,high,low,close,volume,factor
 qlib_init:                      # Qlib 初始化配置
   provider_uri: "~/.qlib/qlib_data/qlib_data_1775983012349"  # A股数据存储路径，按需修改
   region: cn                     # 市场区域，cn代表A股
@@ -32,11 +34,16 @@ task:
     module_path: qlib.contrib.model.gbdt
     kwargs:
       loss: mse
-      colsample_bytree: 0.8      # LightGBM参数，按需调整
-      learning_rate: 0.1         # 学习率
-      max_depth: 8               # 树的最大深度
-      num_leaves: 210            # 叶子节点数
-      num_threads: 20            # 并行线程数
+      num_boost_round: 500       # 新增：限制提升轮数，防止过拟合
+      early_stopping_rounds: 50   # 新增：早停轮数，提高泛化能力
+      colsample_bytree: 0.8
+      learning_rate: 0.05         # 建议降低初始学习率，训练更稳定
+      max_depth: 8
+      num_leaves: 210
+      lambda_l1: 1.0             # 新增：L1正则化，抑制过拟合
+      lambda_l2: 1.0             # 新增：L2正则化
+      min_child_samples: 20      # 新增：叶子节点最小样本数，防止过拟合
+      num_threads: 20
 
 # ==================== 策略与回测配置 ====================
 port_analysis_config: &port_analysis_config  # 策略与回测配置锚点
@@ -44,20 +51,27 @@ port_analysis_config: &port_analysis_config  # 策略与回测配置锚点
     class: TopkDropoutStrategy   # 选股策略，如TopkDropoutStrategy
     module_path: qlib.contrib.strategy.strategy
     kwargs:
-      topk: 12                   # 持有股票数量
-      n_drop: 5                  # 每期调整个数
-      signal: <PRED>             # 模型预测结果占位符
-  backtest:                      # 回测配置
-    start_time: 2025-04-01       # 回测开始日期
-    end_time: 2026-04-10         # 回测结束日期
-    account: 100000000           # 初始资金（单位：元）
-    benchmark: "SH000300"        # 基准指数，沪深300为SH000300
-    exchange_kwargs:             # 交易细节配置
-      limit_threshold: 0.095     # 涨跌停限制（9.5%）
-      deal_price: "close"        # 交易价格，如close、open
-      open_cost: 0.0005          # 开仓手续费率
-      close_cost: 0.0015         # 平仓手续费率
-      min_cost: 0.05             # 最低手续费（元）
+      # 【关键修正】根据你的12只ETF池优化参数
+      topk: 6                    # 持仓数量 = 池子一半，兼顾集中与分散
+      n_drop: 2                  # 每次调仓只替换2只，降低换手率和冲击成本
+      signal: <PRED>
+      risk_degree: 0.95          # 可选，高级风控参数，默认0.95
+      method_sell: "bottom"      # 可选，卖出逻辑，默认卖出最差的n_drop只
+      method_buy: "top"          # 可选，买入逻辑，默认买入最好的n_drop只
+      # 可选：根据你的持仓调整频率。如果你的预测是每日的，策略默认也是每日调仓。
+
+  backtest:
+    start_time: 2025-04-01
+    end_time: 2026-04-10
+    account: 100000000
+    benchmark: "SH000300"
+    exchange_kwargs:
+      limit_threshold: 0.1       # 统一涨跌停限制为10%
+      deal_price: "vwap"         # 改用VWAP，更贴近真实交易成本
+      open_cost: 0.0003          # 买入：佣金0.03%
+      close_cost: 0.0013         # 卖出：佣金0.03% + 印花税0.1%
+      min_cost: 0.05             # 最低手续费
+      slippage: 0.001            # 新增：0.1%的滑点，模拟市场冲击成本
 
 # ==================== 记录与输出 ====================
 record:
