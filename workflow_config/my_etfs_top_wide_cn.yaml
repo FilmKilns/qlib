@@ -1,0 +1,77 @@
+# SH510300,SH511360,SH588000,SH511380,SZ159792,SH512880,SH588200,SH512890,SZ159870,SH512400,SZ159326,SH512170,SZ159819,SH562500,SH511090,SZ159516,SZ159928,SZ159206,SH512690,SH515880,SH512070,SZ159992,SH517520,SZ159755,SH512800,SH515790,SH512660,SZ159869,SH515220,SH516150,SZ159852,SH516160,SH512950,SZ159766,SH512980,SH512200,SZ159736,SZ159865,SH562060,SZ159227,SH561360,SH560280,SZ159623,SZ159825,SH515210,SH561330,SH516510,SH516970,SZ159667
+qlib_init:
+  provider_uri: "~/.qlib/qlib_data/qlib_data_1776181554158"
+  region: cn
+
+trainer:
+  class: RollingTrainer
+  kwargs:
+    train_period: 1825  # 5年，以天为单位
+    test_period: 365   # 1年
+    step: 180          # 6个月
+
+task:
+  model:
+    class: LGBModel
+    module_path: qlib.contrib.model.gbdt
+    kwargs:
+      loss: mse
+      num_boost_round: 2000
+      early_stopping_rounds: 100
+      learning_rate: 0.005
+      max_depth: 4
+      num_leaves: 20
+      lambda_l1: 10.0
+      lambda_l2: 10.0
+      min_child_samples: 100
+      min_split_gain: 0.1
+      subsample: 0.7
+      colsample_bytree: 0.6
+      num_threads: 20
+  dataset:
+    class: DatasetH
+    module_path: qlib.data.dataset
+    kwargs:
+      handler:
+        class: Alpha158
+        module_path: qlib.contrib.data.handler
+        kwargs:
+          label: ["Ref($close, -5) / Ref($close, -1) - 1"]   # 预测未来5日收益
+          start_time: 2019-09-06
+          end_time: 2026-04-13
+          fit_start_time: 2019-09-06
+          fit_end_time: 2023-12-31
+          instruments: 'all'
+      segments:
+        train: [2019-09-06, 2023-12-31]
+        valid: [2024-01-01, 2024-12-31]
+        test: [2025-01-01, 2025-09-30]
+
+port_analysis_config: &port_analysis_config
+  strategy:
+    class: TopkDropoutStrategy
+    module_path: qlib.contrib.strategy.strategy
+    kwargs:
+      topk: 6
+      n_drop: 2
+      signal: <PRED>
+  backtest:
+    start_time: 2025-10-01
+    end_time: 2026-04-07
+    account: 100000000
+    benchmark: "SH000300"
+    exchange_kwargs:
+      limit_threshold: 0.1
+      deal_price: vwap
+      open_cost: 0.0003
+      close_cost: 0.0013
+      min_cost: 0.05
+      slippage: 0.001
+
+record:
+  - class: SignalRecord
+    module_path: qlib.workflow.record_temp
+  - class: PortAnaRecord
+    module_path: qlib.workflow.record_temp
+    kwargs:
+      config: *port_analysis_config
