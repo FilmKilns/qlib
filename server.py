@@ -8,29 +8,29 @@ import shutil
 from pathlib import Path
 from fastapi import FastAPI
 from pydantic import BaseModel
+from datetime import datetime
 
 app = FastAPI()
 
 def download_and_extract_data(market_data_url: str) -> dict:
     """Download file from URL and extract to ~/.qlib/src_data/ directory"""
-    
+        
+    filename = f"qlib_data_from_agent_{int(datetime.now().timestamp() * 1000)}"
     try:
-        target_dir = Path.home() / ".qlib" / "src_data"
+        target_dir = Path.home() / ".qlib" / "src_data" / filename
         
         # Create directory with proper permissions
         try:
             target_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
         except PermissionError:
             # If we can't create in home directory, try current directory
-            target_dir = Path(".qlib") / "src_data"
+            target_dir = Path(".qlib") / "src_data" / filename
             target_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
         
         response = requests.get(market_data_url, stream=True)
         response.raise_for_status()
-        
-        filename = market_data_url.split("/")[-1]
-        if not filename:
-            filename = "downloaded_file"
+
+        filename = f"{filename}.zip"
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=filename) as temp_file:
             for chunk in response.iter_content(chunk_size=8192):
@@ -55,17 +55,20 @@ def download_and_extract_data(market_data_url: str) -> dict:
             
             os.unlink(temp_file_path)
             
-            return {"message": f"Data downloaded and extracted successfully to {target_dir}", "status": "success"}
+            return filename
             
         except Exception as e:
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-            return {"message": f"Error extracting file: {str(e)}", "status": -1}
+            print(f"Error: {str(e)}")
+            return None
             
     except requests.RequestException as e:
-        return {"message": f"Error downloading file: {str(e)}", "status": -1}
+        print(f"Error: {str(e)}")
+        return None
     except Exception as e:
-        return {"message": f"Error: {str(e)}", "status": -1}
+        print(f"Error: {str(e)}")
+        return None
 
 class TrainRequest(BaseModel):
     market_data_url: str
@@ -78,8 +81,15 @@ def do_train(req: TrainRequest):
     if req.code is None or req.code == '':
         return {"message": "code is required", "status": -1}
     
-    download_result = download_and_extract_data(req.market_data_url)
-    if download_result["status"] == -1:
-        return download_result
+    filename = download_and_extract_data(req.market_data_url)
+    if filename is None or filename == '':
+        return {"message": "download_and_extract_data failed", "status": -1}
+
+    filename = filename.split(".")[0]
+    
+    cmd = f"python scripts/dump_bin.py dump_all --data_path ~/.qlib/src_data/{filename}/features/ --qlib_dir ~/.qlib/qlib_data/{filename} --include_fields open,high,low,close,volume,factor"
+    result = os.system(cmd)
+    if result != 0:
+        return {"message": "qlib dump_all failed", "status": -1}
     
     return {"message": "train success", "status": "success"}
