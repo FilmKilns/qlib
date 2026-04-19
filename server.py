@@ -1,5 +1,6 @@
 import sys
 import os
+import io
 import requests
 import zipfile
 import tarfile
@@ -71,12 +72,15 @@ def download_and_extract_data(market_data_url: str) -> dict:
         return None
 
 def execute_python_code(code: str) -> dict:
-    """Safely execute Python code with restricted environment"""
+    """Safely execute Python code with restricted environment and capture console output"""
+    
+    # Create a string buffer to capture print output
+    output_buffer = io.StringIO()
     
     # Create a restricted environment for code execution
     safe_globals = {
         '__builtins__': {
-            'print': print,
+            'print': lambda *args, **kwargs: print(*args, **kwargs, file=output_buffer),
             'len': len,
             'str': str,
             'int': int,
@@ -131,6 +135,9 @@ def execute_python_code(code: str) -> dict:
         # Execute the code
         exec(code, safe_globals, safe_locals)
         
+        # Get the captured output
+        console_output = output_buffer.getvalue()
+        
         # Return any variables that were created
         result_vars = {}
         for var_name, var_value in safe_locals.items():
@@ -141,21 +148,20 @@ def execute_python_code(code: str) -> dict:
                 except:
                     result_vars[var_name] = f"<unable to represent {type(var_value)}>"
         
-        return result_vars
+        return console_output
         
     except Exception as e:
         return str(e)
+    finally:
+        output_buffer.close()
 
 class TrainRequest(BaseModel):
     market_data_url: str
-    code: str
 
-@app.post("/do_train")
-def do_train(req: TrainRequest):
+@app.post("/train/prepare_data")
+def do_train_prepare_data(req: TrainRequest):
     if req.market_data_url is None or req.market_data_url == '':
         return {"message": "market_data_url is required", "status": -1}
-    if req.code is None or req.code == '':
-        return {"message": "code is required", "status": -1}
     
     # Step 1: Download and extract data
     filename = download_and_extract_data(req.market_data_url)
@@ -169,15 +175,37 @@ def do_train(req: TrainRequest):
     result = os.system(cmd)
     if result != 0:
         return {"message": "qlib dump_all failed", "status": -1}
+
+    uri = f"~/.qlib/qlib_data/{filename}"
+    expanded_path = os.path.expanduser(uri)
+    if os.path.exists(expanded_path) and os.path.isdir(expanded_path):
+        pass
+    else:
+        return {
+            "message": f"Train data prepare failed. {uri} not found", 
+            "status": -1
+        }
     
-    # Step 3: Execute the Python code
-    code_result = execute_python_code(req.code)
-    
-    # Combine results
     return {
-        "message": "train success", 
-        "status": "success",
-        "exec_result": code_result
+        "message": "Train data prepare success", 
+        "status": 0,
+        "qlib_init": {
+            "provider_uri": uri
+        }
+    }
+
+class TrainExecRequest(BaseModel):
+    code: str
+
+@app.post("/train/exec")
+def do_train_exec(req: TrainExecRequest):
+    if req.code is None or req.code == '':
+        return {"message": "code is required", "status": -1}
+    console_output = execute_python_code(req.code)
+    return {
+        "message": "Train code exec success", 
+        "status": 0,
+        "train_result": console_output
     }
 
 if __name__ == "__main__":
