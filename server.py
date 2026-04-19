@@ -70,6 +70,82 @@ def download_and_extract_data(market_data_url: str) -> dict:
         print(f"Error: {str(e)}")
         return None
 
+def execute_python_code(code: str) -> dict:
+    """Safely execute Python code with restricted environment"""
+    
+    # Create a restricted environment for code execution
+    safe_globals = {
+        '__builtins__': {
+            'print': print,
+            'len': len,
+            'str': str,
+            'int': int,
+            'float': float,
+            'list': list,
+            'dict': dict,
+            'tuple': tuple,
+            'set': set,
+            'range': range,
+            'enumerate': enumerate,
+            'zip': zip,
+            'min': min,
+            'max': max,
+            'sum': sum,
+            'abs': abs,
+            'round': round,
+            'sorted': sorted,
+            'reversed': reversed,
+            'isinstance': isinstance,
+            'type': type,
+            'bool': bool,
+            'Exception': Exception,
+            'ImportError': ImportError,
+            'ValueError': ValueError,
+            'TypeError': TypeError,
+        }
+    }
+    
+    # Add qlib-specific modules if available
+    try:
+        import qlib
+        safe_globals['qlib'] = qlib
+    except ImportError:
+        pass
+    
+    try:
+        import pandas as pd
+        safe_globals['pd'] = pd
+    except ImportError:
+        pass
+    
+    try:
+        import numpy as np
+        safe_globals['np'] = np
+    except ImportError:
+        pass
+    
+    # Create a local namespace for the code
+    safe_locals = {}
+    
+    try:
+        # Execute the code
+        exec(code, safe_globals, safe_locals)
+        
+        # Return any variables that were created
+        result_vars = {}
+        for var_name, var_value in safe_locals.items():
+            if not var_name.startswith('_'):
+                # Convert to string representation for safety
+                try:
+                    result_vars[var_name] = str(var_value)
+                except:
+                    result_vars[var_name] = f"<unable to represent {type(var_value)}>"
+        
+        return result_vars
+        
+    except Exception as e:
+        return str(e)
+
 class TrainRequest(BaseModel):
     market_data_url: str
     code: str
@@ -81,15 +157,30 @@ def do_train(req: TrainRequest):
     if req.code is None or req.code == '':
         return {"message": "code is required", "status": -1}
     
+    # Step 1: Download and extract data
     filename = download_and_extract_data(req.market_data_url)
     if filename is None or filename == '':
         return {"message": "download_and_extract_data failed", "status": -1}
 
     filename = filename.split(".")[0]
     
+    # Step 2: Run qlib dump_all command
     cmd = f"python scripts/dump_bin.py dump_all --data_path ~/.qlib/src_data/{filename}/features/ --qlib_dir ~/.qlib/qlib_data/{filename} --include_fields open,high,low,close,volume,factor"
     result = os.system(cmd)
     if result != 0:
         return {"message": "qlib dump_all failed", "status": -1}
     
-    return {"message": "train success", "status": "success"}
+    # Step 3: Execute the Python code
+    code_result = execute_python_code(req.code)
+    
+    # Combine results
+    return {
+        "message": "train success", 
+        "status": "success",
+        "exec_result": code_result
+    }
+
+if __name__ == "__main__":
+    result = execute_python_code('print("Hello, World!")')
+    # result = execute_python_code('raise Exception("Test Exception")')
+    print(f"execute_python_code: {result}")
